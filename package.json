@@ -6,8 +6,9 @@
   "scripts": {
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "build": "pnpm --filter @daydanhvan/web build && pnpm --filter @daydanhvan/api build",
+    "build": "pnpm --filter @daydanhvan/web build && pnpm --filter @daydanhvan/admin build && pnpm --filter @daydanhvan/api build",
     "build:web": "pnpm --filter @daydanhvan/web build",
+    "build:admin": "pnpm --filter @daydanhvan/admin build",
     "build:worker": "pnpm --filter @daydanhvan/api build",
     "lint": "pnpm -r --if-present lint"
   },
