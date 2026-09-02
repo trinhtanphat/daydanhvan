@@ -9,6 +9,12 @@ import {
 } from "@daydanhvan/contracts";
 import { demoConversations, demoMessages, demoTeachers } from "./demo-data";
 import { haversineKm, roundDistanceKm } from "./distance";
+import {
+  loadConversationsFromDb,
+  loadTeacherFromDb,
+  loadTeachersFromDb,
+  type TeacherRecord
+} from "./repository";
 
 export { ChatRoom } from "./chat-room";
 
@@ -22,6 +28,7 @@ export type Bindings = {
 };
 
 const DEMO_USER_ID = "demo-user";
+const DEFAULT_SEARCH_CENTER = { lat: 21.033, lng: 105.794 };
 export const app = new Hono<{ Bindings: Bindings }>();
 
 app.get("/api/v1/health", (c) => {
@@ -34,16 +41,32 @@ app.get("/api/v1/health", (c) => {
   );
 });
 
-app.get("/api/v1/teachers", (c) => {
-  const lat = Number(c.req.query("lat"));
-  const lng = Number(c.req.query("lng"));
+app.get("/api/v1/teachers", async (c) => {
+  const queryLat = Number(c.req.query("lat"));
+  const queryLng = Number(c.req.query("lng"));
   const maxDistance = Number(c.req.query("maxDistanceKm") ?? "0");
   const verifiedOnly = c.req.query("verified") === "true";
-  const hasLocation = Number.isFinite(lat) && Number.isFinite(lng) && c.req.query("lat") !== undefined && c.req.query("lng") !== undefined;
+  const hasLocation = Number.isFinite(queryLat) && Number.isFinite(queryLng) && c.req.query("lat") !== undefined && c.req.query("lng") !== undefined;
+  const origin = hasLocation ? { lat: queryLat, lng: queryLng } : DEFAULT_SEARCH_CENTER;
 
-  let teachers: Teacher[] = demoTeachers.map(({ serviceLat, serviceLng, ...teacher }) => ({
+  let source: TeacherRecord[];
+  if (c.env.DB) {
+    try {
+      source = await loadTeachersFromDb(c.env.DB);
+      if (source.length === 0) throw new Error("empty_teacher_store");
+    } catch {
+      source = demoTeachers;
+    }
+  } else {
+    source = demoTeachers;
+  }
+
+  let teachers: Teacher[] = source.map(({ serviceLat, serviceLng, ...teacher }) => ({
     ...teacher,
-    distanceKm: hasLocation ? roundDistanceKm(haversineKm(lat, lng, serviceLat, serviceLng)) : teacher.distanceKm
+    distanceKm:
+      serviceLat != null && serviceLng != null
+        ? roundDistanceKm(haversineKm(origin.lat, origin.lng, serviceLat, serviceLng))
+        : teacher.distanceKm
   }));
 
   if (verifiedOnly) teachers = teachers.filter((teacher) => teacher.verified);
@@ -60,11 +83,23 @@ app.get("/api/v1/teachers", (c) => {
   );
 });
 
-app.get("/api/v1/teachers/:id", (c) => {
-  const record = demoTeachers.find((teacher) => teacher.id === c.req.param("id"));
+app.get("/api/v1/teachers/:id", async (c) => {
+  const teacherId = c.req.param("id");
+  let record: TeacherRecord | null = null;
+  if (c.env.DB) {
+    try {
+      record = await loadTeacherFromDb(c.env.DB, teacherId);
+    } catch {
+      record = null;
+    }
+  }
+  record ??= demoTeachers.find((teacher) => teacher.id === teacherId) ?? null;
   if (!record) return c.json({ error: "teacher_not_found" }, 404);
-  const { serviceLat: _lat, serviceLng: _lng, ...teacher } = record;
-  return c.json(TeacherSchema.parse(teacher));
+  const { serviceLat, serviceLng, ...teacher } = record;
+  const distanceKm = serviceLat != null && serviceLng != null
+    ? roundDistanceKm(haversineKm(DEFAULT_SEARCH_CENTER.lat, DEFAULT_SEARCH_CENTER.lng, serviceLat, serviceLng))
+    : teacher.distanceKm;
+  return c.json(TeacherSchema.parse({ ...teacher, distanceKm }));
 });
 
 app.get("/api/v1/favorites", async (c) => {
@@ -98,7 +133,15 @@ app.delete("/api/v1/favorites/:teacherId", async (c) => {
   return c.json({ teacherId, favorited: false });
 });
 
-app.get("/api/v1/conversations", (c) => c.json({ conversations: demoConversations }));
+app.get("/api/v1/conversations", async (c) => {
+  if (!c.env.DB) return c.json({ conversations: demoConversations });
+  try {
+    const conversations = await loadConversationsFromDb(c.env.DB, DEMO_USER_ID);
+    return c.json({ conversations: conversations.length ? conversations : demoConversations });
+  } catch {
+    return c.json({ conversations: demoConversations });
+  }
+});
 
 app.get("/api/v1/conversations/:id/messages", async (c) => {
   const conversationId = c.req.param("id");
@@ -136,6 +179,9 @@ app.post("/api/v1/conversations/:id/messages", async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO messages (id, conversation_id, sender_id, body, created_at) VALUES (?, ?, ?, ?, ?)"
     ).bind(message.id, message.conversationId, message.senderId, message.body, message.createdAt).run();
+    await c.env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
+      .bind(message.createdAt, conversationId)
+      .run();
   }
 
   return c.json(message, 201);
