@@ -36,6 +36,17 @@ jobs:
         run: |
           cd apps/mobile/ios
           pod install
+      - name: Select build configuration
+        id: config
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            echo 'name=Release' >> "$GITHUB_OUTPUT"
+            echo 'dir=Release-iphonesimulator' >> "$GITHUB_OUTPUT"
+          else
+            echo 'name=Debug' >> "$GITHUB_OUTPUT"
+            echo 'dir=Debug-iphonesimulator' >> "$GITHUB_OUTPUT"
+          fi
       - name: Build iOS Simulator app
         shell: bash
         run: |
@@ -47,7 +58,7 @@ jobs:
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
-            -configuration Debug \
+            -configuration "${{ steps.config.outputs.name }}" \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
@@ -57,7 +68,7 @@ jobs:
       - name: Upload simulator app
         uses: actions/upload-artifact@v4
         with:
-          name: daydanhvan-ios-simulator-${{ github.sha }}
-          path: ${{ runner.temp }}/DerivedData/Build/Products/Debug-iphonesimulator/*.app
+          name: daydanhvan-ios-${{ steps.config.outputs.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/DerivedData/Build/Products/${{ steps.config.outputs.dir }}/*.app
           if-no-files-found: error
           retention-days: 14
