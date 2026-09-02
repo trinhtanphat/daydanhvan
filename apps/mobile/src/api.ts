@@ -1,4 +1,5 @@
 import { TeacherListResponseSchema, type Teacher } from "@daydanhvan/contracts";
+import { getApiBaseUrl, getHealthUrl } from "./config";
 
 export const mobileFallbackTeachers: Teacher[] = [
   { id: "mai-anh", name: "Mai Anh", age: 24, distanceKm: 0.6, verified: true, specialty: "Đánh vần nền tảng", district: "Cầu Giấy", avatarUrl: null, online: true, rating: 4.9 },
@@ -7,12 +8,28 @@ export const mobileFallbackTeachers: Teacher[] = [
   { id: "khanh-linh", name: "Khánh Linh", age: 24, distanceKm: 2.3, verified: true, specialty: "Ghép vần & chính tả", district: "Đống Đa", avatarUrl: null, online: true, rating: 4.7 }
 ];
 
-const baseUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+export type ApiHealth = {
+  ok: boolean;
+  service: string;
+  version: string;
+};
+
+export async function checkApiHealth(): Promise<ApiHealth | null> {
+  try {
+    const response = await fetch(getHealthUrl(), { headers: { Accept: "application/json" } });
+    if (!response.ok) return null;
+    const payload = await response.json() as Partial<ApiHealth>;
+    if (payload.ok !== true || payload.service !== "daydanhvan-api" || typeof payload.version !== "string") return null;
+    return { ok: true, service: payload.service, version: payload.version };
+  } catch {
+    return null;
+  }
+}
 
 export async function loadMobileTeachers(): Promise<Teacher[]> {
-  if (!baseUrl) return mobileFallbackTeachers;
+  const baseUrl = getApiBaseUrl();
   try {
-    const response = await fetch(`${baseUrl}/api/v1/teachers`);
+    const response = await fetch(`${baseUrl}/api/v1/teachers`, { headers: { Accept: "application/json" } });
     if (!response.ok) return mobileFallbackTeachers;
     return TeacherListResponseSchema.parse(await response.json()).teachers;
   } catch {
