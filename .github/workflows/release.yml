@@ -58,3 +58,73 @@ jobs:
           git tag -a "$TAG" "$RELEASE_SHA" -m "Dạy đánh vần $TAG"
           git push origin "$TAG"
           gh release create "$TAG" --target "$RELEASE_SHA" --title "Dạy đánh vần $TAG" --notes-file CHANGELOG.md
+
+  ios-release-tagged:
+    name: iOS Release v0.1.0
+    needs: release-v0-1-0
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v0.1.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.1.0
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck mobile
+        run: pnpm --filter @daydanhvan/mobile typecheck
+      - name: Generate iOS project from tag
+        run: pnpm --filter @daydanhvan/mobile exec expo prebuild --platform ios --non-interactive --clean
+      - name: Install CocoaPods
+        run: |
+          cd apps/mobile/ios
+          pod install
+      - name: Build tagged iOS Release simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(find apps/mobile/ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          if [[ -z "$WORKSPACE" ]]; then echo 'No xcworkspace generated' >&2; exit 1; fi
+          SCHEME="$(xcodebuild -workspace "$WORKSPACE" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")')"
+          if [[ -z "$SCHEME" ]]; then echo 'No build scheme found' >&2; exit 1; fi
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+      - name: Package tagged Release app
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphonesimulator" -maxdepth 1 -name '*.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then echo 'Release .app not found' >&2; exit 1; fi
+          ZIP_PATH="$RUNNER_TEMP/daydanhvan-ios-${RELEASE_TAG}-simulator.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+          echo "zip=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daydanhvan-ios-Release-v0.1.0
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach tagged iOS build to GitHub Release
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" "${{ steps.package.outputs.zip }}" --clobber
