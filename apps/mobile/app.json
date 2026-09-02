@@ -2,16 +2,20 @@
   "expo": {
     "name": "Dạy đánh vần",
     "slug": "daydanhvan",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "site.qs3d.daydanhvan",
-      "buildNumber": "1"
+      "buildNumber": "2"
+    },
+    "android": {
+      "package": "site.qs3d.daydanhvan",
+      "versionCode": 2
     },
     "extra": {
-      "apiUrl": ""
+      "apiUrl": "https://daydanhvan.qs3d.site"
     }
   }
 }

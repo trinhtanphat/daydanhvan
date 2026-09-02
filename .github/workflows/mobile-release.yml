@@ -1,0 +1,382 @@
+name: Mobile Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic tag to package
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: Semantic tag to package
+        required: true
+        type: string
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+      APPLE_CERTIFICATE_P12_BASE64:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_ADHOC_PROVISION_PROFILE_BASE64:
+        required: false
+      APPLE_APPSTORE_PROVISION_PROFILE_BASE64:
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  PRODUCTION_ORIGIN: https://daydanhvan.qs3d.site
+
+jobs:
+  ensure-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Validate semantic tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag: $TAG" >&2; exit 1; }
+          git rev-parse "$TAG^{commit}" >/dev/null
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Ensure GitHub Release exists
+        shell: bash
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$RELEASE_TAG" --title "Dạy đánh vần $RELEASE_TAG" --generate-notes
+          fi
+
+  android:
+    name: Android APK + AAB
+    needs: ensure-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.ensure-release.outputs.tag }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck mobile
+        run: pnpm --filter @daydanhvan/mobile typecheck
+      - name: Generate Android project from tag
+        env:
+          EXPO_PUBLIC_API_URL: https://daydanhvan.qs3d.site
+        run: pnpm --filter @daydanhvan/mobile exec expo prebuild --platform android --non-interactive --clean
+      - name: Detect stable Android signing
+        id: signing
+        shell: bash
+        run: |
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${ANDROID_KEYSTORE_PASSWORD:-}" && -n "${ANDROID_KEY_ALIAS:-}" && -n "${ANDROID_KEY_PASSWORD:-}" ]]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Stable Android signing secrets are missing. Publishing a sideload-test APK only; production AAB is skipped.'
+          fi
+      - name: Configure stable Android signing
+        if: steps.signing.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/daydanhvan-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          export KEYSTORE
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/mobile/android/app/build.gradle')
+          text = p.read_text()
+          marker = 'android {'
+          addition = '''android.signingConfigs.create("daydanhvanRelease") {
+              storeFile file(System.getenv("DDV_ANDROID_KEYSTORE"))
+              storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+              keyAlias System.getenv("ANDROID_KEY_ALIAS")
+              keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+          }
+          android.buildTypes.release.signingConfig = android.signingConfigs.daydanhvanRelease
+          '''
+          p.write_text(text + '\n' + addition)
+          PY
+          echo "DDV_ANDROID_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+      - name: Build Android binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/mobile/android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
+            ./gradlew bundleRelease --no-daemon
+          fi
+      - name: Package Android artifacts
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.ensure-release.outputs.tag }}"
+          APK_SOURCE="$(find apps/mobile/android/app/build/outputs/apk/release -name '*.apk' -print -quit)"
+          [[ -n "$APK_SOURCE" ]] || { echo 'Release APK not found' >&2; exit 1; }
+          APK_OUT="$RUNNER_TEMP/daydanhvan-android-${TAG}.apk"
+          cp "$APK_SOURCE" "$APK_OUT"
+          echo "apk=$APK_OUT" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
+            AAB_SOURCE="$(find apps/mobile/android/app/build/outputs/bundle/release -name '*.aab' -print -quit)"
+            [[ -n "$AAB_SOURCE" ]] || { echo 'Signed AAB not found' >&2; exit 1; }
+            AAB_OUT="$RUNNER_TEMP/daydanhvan-android-${TAG}.aab"
+            cp "$AAB_SOURCE" "$AAB_OUT"
+            echo "aab=$AAB_OUT" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daydanhvan-android-${{ needs.ensure-release.outputs.tag }}
+          path: ${{ steps.package.outputs.apk }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach APK to GitHub Release
+        run: gh release upload "${{ needs.ensure-release.outputs.tag }}" "${{ steps.package.outputs.apk }}" --clobber
+      - name: Attach production AAB to GitHub Release
+        if: steps.signing.outputs.available == 'true'
+        run: gh release upload "${{ needs.ensure-release.outputs.tag }}" "${{ steps.package.outputs.aab }}" --clobber
+
+  ios-adhoc:
+    name: iOS Ad Hoc IPA
+    needs: ensure-release
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROFILE_BASE64: ${{ secrets.APPLE_ADHOC_PROVISION_PROFILE_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.ensure-release.outputs.tag }}
+          fetch-depth: 0
+      - name: Detect Ad Hoc signing credentials
+        id: signing-ready
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_CERTIFICATE_P12_BASE64:-}" && -n "${APPLE_CERTIFICATE_PASSWORD:-}" && -n "${APPLE_PROFILE_BASE64:-}" ]]; then
+            echo 'value=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'value=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Ad Hoc Apple signing secrets are missing; physical-device Ad Hoc IPA is skipped.'
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install and prebuild iOS
+        if: steps.signing-ready.outputs.value == 'true'
+        env:
+          EXPO_PUBLIC_API_URL: https://daydanhvan.qs3d.site
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @daydanhvan/mobile typecheck
+          pnpm --filter @daydanhvan/mobile exec expo prebuild --platform ios --non-interactive --clean
+          cd apps/mobile/ios && pod install
+      - name: Install certificate and profile
+        if: steps.signing-ready.outputs.value == 'true'
+        id: apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERT="$RUNNER_TEMP/distribution.p12"
+          PROFILE="$RUNNER_TEMP/adhoc.mobileprovision"
+          PLIST="$RUNNER_TEMP/profile.plist"
+          KEYCHAIN="$RUNNER_TEMP/daydanhvan.keychain-db"
+          KP="ddv-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT"
+          printf '%s' "$APPLE_PROFILE_BASE64" | base64 --decode > "$PROFILE"
+          security create-keychain -p "$KP" "$KEYCHAIN"
+          security unlock-keychain -p "$KP" "$KEYCHAIN"
+          security import "$CERT" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security cms -D -i "$PROFILE" > "$PLIST"
+          UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PLIST")"
+          NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PLIST")"
+          TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PLIST")"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "profile=$NAME" >> "$GITHUB_OUTPUT"
+          echo "team=$TEAM" >> "$GITHUB_OUTPUT"
+      - name: Archive and export Ad Hoc IPA
+        if: steps.signing-ready.outputs.value == 'true'
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(find apps/mobile/ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          SCHEME="$(xcodebuild -workspace "$WORKSPACE" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("workspace",{}).get("schemes") or [""])[0])')"
+          ARCHIVE="$RUNNER_TEMP/daydanhvan-adhoc.xcarchive"
+          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Release -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" DEVELOPMENT_TEAM="${{ steps.apple.outputs.team }}" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="${{ steps.apple.outputs.profile }}" PRODUCT_BUNDLE_IDENTIFIER=site.qs3d.daydanhvan archive
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>method</key><string>ad-hoc</string><key>signingStyle</key><string>manual</string><key>teamID</key><string>${{ steps.apple.outputs.team }}</string><key>provisioningProfiles</key><dict><key>site.qs3d.daydanhvan</key><string>${{ steps.apple.outputs.profile }}</string></dict></dict></plist>
+          PLIST
+          OUT="$RUNNER_TEMP/adhoc-export"
+          xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$OUT" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          SRC="$(find "$OUT" -name '*.ipa' -print -quit)"
+          IPA="$RUNNER_TEMP/daydanhvan-ios-adhoc-${{ needs.ensure-release.outputs.tag }}.ipa"
+          cp "$SRC" "$IPA"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+      - name: Publish Ad Hoc IPA
+        if: steps.signing-ready.outputs.value == 'true'
+        run: gh release upload "${{ needs.ensure-release.outputs.tag }}" "${{ steps.package.outputs.ipa }}" --clobber
+      - uses: actions/upload-artifact@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          name: daydanhvan-ios-adhoc-${{ needs.ensure-release.outputs.tag }}
+          path: ${{ steps.package.outputs.ipa }}
+          if-no-files-found: error
+
+  ios-appstore:
+    name: iOS App Store IPA
+    needs: ensure-release
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROFILE_BASE64: ${{ secrets.APPLE_APPSTORE_PROVISION_PROFILE_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.ensure-release.outputs.tag }}
+          fetch-depth: 0
+      - name: Detect App Store signing credentials
+        id: signing-ready
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_CERTIFICATE_P12_BASE64:-}" && -n "${APPLE_CERTIFICATE_PASSWORD:-}" && -n "${APPLE_PROFILE_BASE64:-}" ]]; then
+            echo 'value=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'value=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::App Store Apple signing secrets are missing; App Store/TestFlight IPA is skipped.'
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install and prebuild iOS
+        if: steps.signing-ready.outputs.value == 'true'
+        env:
+          EXPO_PUBLIC_API_URL: https://daydanhvan.qs3d.site
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @daydanhvan/mobile typecheck
+          pnpm --filter @daydanhvan/mobile exec expo prebuild --platform ios --non-interactive --clean
+          cd apps/mobile/ios && pod install
+      - name: Install certificate and profile
+        if: steps.signing-ready.outputs.value == 'true'
+        id: apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERT="$RUNNER_TEMP/distribution.p12"
+          PROFILE="$RUNNER_TEMP/appstore.mobileprovision"
+          PLIST="$RUNNER_TEMP/profile.plist"
+          KEYCHAIN="$RUNNER_TEMP/daydanhvan.keychain-db"
+          KP="ddv-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT"
+          printf '%s' "$APPLE_PROFILE_BASE64" | base64 --decode > "$PROFILE"
+          security create-keychain -p "$KP" "$KEYCHAIN"
+          security unlock-keychain -p "$KP" "$KEYCHAIN"
+          security import "$CERT" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security cms -D -i "$PROFILE" > "$PLIST"
+          UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PLIST")"
+          NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PLIST")"
+          TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PLIST")"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "profile=$NAME" >> "$GITHUB_OUTPUT"
+          echo "team=$TEAM" >> "$GITHUB_OUTPUT"
+      - name: Archive and export App Store IPA
+        if: steps.signing-ready.outputs.value == 'true'
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(find apps/mobile/ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          SCHEME="$(xcodebuild -workspace "$WORKSPACE" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("workspace",{}).get("schemes") or [""])[0])')"
+          ARCHIVE="$RUNNER_TEMP/daydanhvan-appstore.xcarchive"
+          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Release -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" DEVELOPMENT_TEAM="${{ steps.apple.outputs.team }}" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="${{ steps.apple.outputs.profile }}" PRODUCT_BUNDLE_IDENTIFIER=site.qs3d.daydanhvan archive
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>method</key><string>app-store-connect</string><key>signingStyle</key><string>manual</string><key>teamID</key><string>${{ steps.apple.outputs.team }}</string><key>provisioningProfiles</key><dict><key>site.qs3d.daydanhvan</key><string>${{ steps.apple.outputs.profile }}</string></dict></dict></plist>
+          PLIST
+          OUT="$RUNNER_TEMP/appstore-export"
+          xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$OUT" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          SRC="$(find "$OUT" -name '*.ipa' -print -quit)"
+          IPA="$RUNNER_TEMP/daydanhvan-ios-appstore-${{ needs.ensure-release.outputs.tag }}.ipa"
+          cp "$SRC" "$IPA"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+      - name: Publish App Store IPA
+        if: steps.signing-ready.outputs.value == 'true'
+        run: gh release upload "${{ needs.ensure-release.outputs.tag }}" "${{ steps.package.outputs.ipa }}" --clobber
+      - uses: actions/upload-artifact@v4
+        if: steps.signing-ready.outputs.value == 'true'
+        with:
+          name: daydanhvan-ios-appstore-${{ needs.ensure-release.outputs.tag }}
+          path: ${{ steps.package.outputs.ipa }}
+          if-no-files-found: error

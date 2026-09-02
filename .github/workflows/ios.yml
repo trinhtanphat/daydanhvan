@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "feat/**"
+      - "fix/**"
     tags:
       - "v*"
   pull_request:
@@ -31,6 +32,8 @@ jobs:
       - name: Typecheck mobile
         run: pnpm --filter @daydanhvan/mobile typecheck
       - name: Generate iOS project
+        env:
+          EXPO_PUBLIC_API_URL: https://daydanhvan.qs3d.site
         run: pnpm --filter @daydanhvan/mobile exec expo prebuild --platform ios --non-interactive --clean
       - name: Install CocoaPods
         run: |

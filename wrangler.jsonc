@@ -1,12 +1,18 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "daydanhvan",
-  "main": "apps/api/src/index.ts",
+  "main": "apps/api/src/worker.ts",
   "compatibility_date": "2026-09-02",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "APP_VERSION": "0.1.0"
+    "APP_VERSION": "0.2.0"
   },
+  "routes": [
+    {
+      "pattern": "daydanhvan.qs3d.site",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./apps/web/dist",
     "binding": "ASSETS",
