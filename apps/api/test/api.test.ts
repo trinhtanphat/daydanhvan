@@ -16,4 +16,10 @@ describe("daydanhvan API", () => {
     expect(body.teachers.length).toBeGreaterThan(0);
     expect(body.teachers.every((teacher) => !("serviceLat" in teacher) && !("serviceLng" in teacher))).toBe(true);
   });
+
+  it("fails closed for admin endpoints when no secret is configured", async () => {
+    const response = await app.request("/api/v1/admin/teachers");
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
+  });
 });

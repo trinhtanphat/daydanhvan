@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  javascript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
+      - name: Build web
+        run: pnpm build:web
+      - name: Build admin
+        run: pnpm build:admin
+      - name: Worker dry run
+        run: pnpm build:worker
+      - name: Secret-pattern guard
+        run: |
+          if git grep -nE '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|CLOUDFLARE_API_TOKEN[=:][[:space:]]*[^$]|APPLE_CERTIFICATE_P12_BASE64[=:][[:space:]]*[^$])' -- ':!docs/**'; then
+            echo 'Potential secret material found in repository.' >&2
+            exit 1
+          fi
