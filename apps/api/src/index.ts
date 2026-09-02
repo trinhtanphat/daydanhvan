@@ -18,6 +18,7 @@ export type Bindings = {
   CHAT_ROOM?: DurableObjectNamespace;
   ASSETS?: Fetcher;
   APP_VERSION?: string;
+  ADMIN_API_KEY?: string;
 };
 
 const DEMO_USER_ID = "demo-user";
@@ -144,6 +145,66 @@ app.get("/api/v1/ws/conversations/:id", async (c) => {
   if (!c.env.CHAT_ROOM) return c.json({ error: "realtime_not_configured" }, 503);
   const id = c.env.CHAT_ROOM.idFromName(c.req.param("id"));
   return c.env.CHAT_ROOM.get(id).fetch(c.req.raw);
+});
+
+app.get("/api/v1/admin/teachers", async (c) => {
+  const adminKey = c.env.ADMIN_API_KEY;
+  if (!adminKey || c.req.header("X-Admin-Key") !== adminKey) return c.json({ error: "forbidden" }, 403);
+
+  if (!c.env.DB) {
+    return c.json({
+      teachers: demoTeachers.map((teacher) => ({
+        id: teacher.id,
+        name: teacher.name,
+        verified: teacher.verified,
+        moderationStatus: teacher.verified ? "approved" : "pending"
+      }))
+    });
+  }
+
+  const result = await c.env.DB.prepare(
+    "SELECT tp.user_id AS id, u.display_name AS name, tp.verified AS verified, tp.moderation_status AS moderation_status FROM teacher_profiles tp JOIN users u ON u.id = tp.user_id ORDER BY u.display_name"
+  ).all<{ id: string; name: string; verified: number; moderation_status: string }>();
+  return c.json({
+    teachers: result.results.map((row) => ({
+      id: row.id,
+      name: row.name,
+      verified: row.verified === 1,
+      moderationStatus: row.moderation_status
+    }))
+  });
+});
+
+app.post("/api/v1/admin/teachers/:id/approve", async (c) => {
+  const adminKey = c.env.ADMIN_API_KEY;
+  if (!adminKey || c.req.header("X-Admin-Key") !== adminKey) return c.json({ error: "forbidden" }, 403);
+  const teacherId = c.req.param("id");
+  if (!c.env.DB && !demoTeachers.some((teacher) => teacher.id === teacherId)) {
+    return c.json({ error: "teacher_not_found" }, 404);
+  }
+  if (c.env.DB) {
+    await c.env.DB.prepare(
+      "UPDATE teacher_profiles SET verified = 1, moderation_status = 'approved' WHERE user_id = ?"
+    ).bind(teacherId).run();
+  }
+  return c.json({ id: teacherId, verified: true, moderationStatus: "approved" });
+});
+
+app.get("/api/v1/admin/reports", async (c) => {
+  const adminKey = c.env.ADMIN_API_KEY;
+  if (!adminKey || c.req.header("X-Admin-Key") !== adminKey) return c.json({ error: "forbidden" }, 403);
+  if (!c.env.DB) return c.json({ reports: [] });
+  const result = await c.env.DB.prepare(
+    "SELECT id, reason, status, target_user_id FROM reports WHERE status IN ('open','reviewing') ORDER BY created_at ASC"
+  ).all<{ id: string; reason: string; status: string; target_user_id: string }>();
+  return c.json({
+    reports: result.results.map((row) => ({
+      id: row.id,
+      reason: row.reason,
+      status: row.status,
+      targetUserId: row.target_user_id
+    }))
+  });
 });
 
 app.notFound((c) => {
