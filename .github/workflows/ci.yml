@@ -41,11 +41,11 @@ jobs:
             echo 'Private key material found in repository.' >&2
             exit 1
           fi
-          if git grep -nE 'CLOUDFLARE_API_TOKEN[=:][[:space:]]*["'"']?[A-Za-z0-9_-]{20,}' -- ':!docs/**'; then
+          if git grep -nE 'CLOUDFLARE_API_TOKEN[=:][[:space:]]*"?[A-Za-z0-9_-]{20,}' -- ':!docs/**'; then
             echo 'Possible literal Cloudflare API token found in repository.' >&2
             exit 1
           fi
-          if git grep -nE 'APPLE_CERTIFICATE_P12_BASE64[=:][[:space:]]*["'"']?[A-Za-z0-9+/=]{40,}' -- ':!docs/**'; then
+          if git grep -nE 'APPLE_CERTIFICATE_P12_BASE64[=:][[:space:]]*"?[A-Za-z0-9+/=]{40,}' -- ':!docs/**'; then
             echo 'Possible literal Apple certificate material found in repository.' >&2
             exit 1
           fi
