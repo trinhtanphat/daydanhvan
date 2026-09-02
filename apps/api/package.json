@@ -1,0 +1,23 @@
+{
+  "name": "@daydanhvan/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config ../../wrangler.jsonc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --config ../../wrangler.jsonc --outdir ../../dist/worker"
+  },
+  "dependencies": {
+    "@daydanhvan/contracts": "workspace:*",
+    "hono": "4.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20250823.0",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4",
+    "wrangler": "4.34.0"
+  }
+}
