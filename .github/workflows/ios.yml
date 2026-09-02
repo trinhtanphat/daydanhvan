@@ -1,0 +1,74 @@
+name: iOS
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck mobile
+        run: pnpm --filter @daydanhvan/mobile typecheck
+      - name: Generate iOS project
+        run: pnpm --filter @daydanhvan/mobile exec expo prebuild --platform ios --non-interactive --clean
+      - name: Install CocoaPods
+        run: |
+          cd apps/mobile/ios
+          pod install
+      - name: Select build configuration
+        id: config
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            echo 'name=Release' >> "$GITHUB_OUTPUT"
+            echo 'dir=Release-iphonesimulator' >> "$GITHUB_OUTPUT"
+          else
+            echo 'name=Debug' >> "$GITHUB_OUTPUT"
+            echo 'dir=Debug-iphonesimulator' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build iOS Simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(find apps/mobile/ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          if [[ -z "$WORKSPACE" ]]; then echo 'No xcworkspace generated' >&2; exit 1; fi
+          SCHEME="$(xcodebuild -workspace "$WORKSPACE" -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")')"
+          if [[ -z "$SCHEME" ]]; then echo 'No build scheme found' >&2; exit 1; fi
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration "${{ steps.config.outputs.name }}" \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+      - name: Upload simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: daydanhvan-ios-${{ steps.config.outputs.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/DerivedData/Build/Products/${{ steps.config.outputs.dir }}/*.app
+          if-no-files-found: error
+          retention-days: 14

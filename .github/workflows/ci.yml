@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  javascript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
+      - name: Build web
+        run: pnpm build:web
+      - name: Build admin
+        run: pnpm build:admin
+      - name: Worker dry run
+        run: pnpm build:worker
+      - name: Secret-pattern guard
+        run: |
+          if git grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' -- ':!docs/**'; then
+            echo 'Private key material found in repository.' >&2
+            exit 1
+          fi
+          if git grep -nE 'CLOUDFLARE_API_TOKEN[=:][[:space:]]*"?[A-Za-z0-9_-]{20,}' -- ':!docs/**'; then
+            echo 'Possible literal Cloudflare API token found in repository.' >&2
+            exit 1
+          fi
+          if git grep -nE 'APPLE_CERTIFICATE_P12_BASE64[=:][[:space:]]*"?[A-Za-z0-9+/=]{40,}' -- ':!docs/**'; then
+            echo 'Possible literal Apple certificate material found in repository.' >&2
+            exit 1
+          fi

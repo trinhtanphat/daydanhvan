@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["iOS"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release-v0-1-0:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Require matching CI success
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..20}; do
+            conclusion="$(gh run list --workflow CI --commit "$RELEASE_SHA" --limit 1 --json conclusion --jq '.[0].conclusion // ""')"
+            if [[ "$conclusion" == "success" ]]; then exit 0; fi
+            if [[ "$conclusion" == "failure" || "$conclusion" == "cancelled" ]]; then
+              echo "CI conclusion is $conclusion" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          echo 'Timed out waiting for CI success' >&2
+          exit 1
+      - name: Verify package version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          [[ "$VERSION" == "0.1.0" ]] || { echo "Unexpected version: $VERSION" >&2; exit 1; }
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Create tag and GitHub Release if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists; release workflow is idempotent."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" "$RELEASE_SHA" -m "Dạy đánh vần $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --target "$RELEASE_SHA" --title "Dạy đánh vần $TAG" --notes-file CHANGELOG.md

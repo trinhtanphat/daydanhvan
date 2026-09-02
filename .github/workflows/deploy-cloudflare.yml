@@ -1,0 +1,67 @@
+name: Deploy Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: 6c5207813df3d5b83b9508125e0e9e12
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build static applications
+        run: |
+          pnpm build:web
+          pnpm build:admin
+      - name: Detect Cloudflare credential
+        id: cloudflare
+        shell: bash
+        run: |
+          if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::CLOUDFLARE_API_TOKEN is not configured; deployment is skipped.'
+          fi
+      - name: Provision D1 and R2
+        if: steps.cloudflare.outputs.available == 'true'
+        run: node scripts/bootstrap-cloudflare.mjs
+      - name: Generate bound Wrangler config
+        if: steps.cloudflare.outputs.available == 'true'
+        run: node scripts/generate-cloudflare-config.mjs
+      - name: Apply D1 migrations
+        if: steps.cloudflare.outputs.available == 'true'
+        run: pnpm exec wrangler d1 migrations apply daydanhvan-db --remote --config wrangler.generated.json
+      - name: Deploy web and API Worker
+        if: steps.cloudflare.outputs.available == 'true'
+        run: pnpm exec wrangler deploy --config wrangler.generated.json
+      - name: Configure admin API secret
+        if: steps.cloudflare.outputs.available == 'true' && env.ADMIN_API_KEY != ''
+        shell: bash
+        run: printf '%s' "$ADMIN_API_KEY" | pnpm exec wrangler secret put ADMIN_API_KEY --config wrangler.generated.json
+      - name: Deploy admin static Worker
+        if: steps.cloudflare.outputs.available == 'true'
+        run: pnpm exec wrangler deploy --config wrangler.admin.jsonc
+      - name: Smoke test public Worker
+        if: steps.cloudflare.outputs.available == 'true'
+        run: node scripts/smoke-cloudflare.mjs

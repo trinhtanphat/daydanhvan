@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "Dạy đánh vần",
+    "slug": "daydanhvan",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "site.qs3d.daydanhvan",
+      "buildNumber": "1"
+    },
+    "extra": {
+      "apiUrl": ""
+    }
+  }
+}
