@@ -25,8 +25,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Typecheck mobile
         run: pnpm --filter @daydanhvan/mobile typecheck
       - name: Generate iOS project
