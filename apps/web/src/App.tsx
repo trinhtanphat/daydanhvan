@@ -5,7 +5,7 @@ import { RadarSearch } from "./components/RadarSearch";
 import { TeacherCard } from "./components/TeacherCard";
 import { fallbackTeachers, fetchTeachers } from "./lib/api";
 
-const messages = [
+const messages: ReadonlyArray<readonly [string, string, string]> = [
   ["Mai Anh", "Mình có thể học thử vào chiều thứ Bảy nhé.", "10:42"],
   ["Phương Linh", "Em gửi chị lộ trình 4 buổi đầu ạ.", "Hôm qua"]
 ];
