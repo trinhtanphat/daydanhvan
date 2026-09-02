@@ -163,7 +163,7 @@ app.get("/api/v1/conversations/:id/messages", async (c) => {
 
 app.post("/api/v1/conversations/:id/messages", async (c) => {
   const conversationId = c.req.param("id");
-  const payload = await c.req.json<{ body?: string }>().catch(() => ({}));
+  const payload = await c.req.json<{ body?: string }>().catch(() => ({ body: undefined }));
   const body = payload.body?.trim() ?? "";
   if (!body || body.length > 4000) return c.json({ error: "invalid_message" }, 400);
 
